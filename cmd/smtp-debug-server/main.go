@@ -23,7 +23,7 @@ func (bkd *backend) NewSession(c *smtp.Conn) (smtp.Session, error) {
 
 type session struct{}
 
-func (s *session) AuthPlain(username, password string) error {
+func (s *session) Auth(username, password string, additionalAuthParameters smtp.AuthParameters) error {
 	return nil
 }
 
@@ -48,7 +48,10 @@ func (s *session) Logout() error {
 func main() {
 	flag.Parse()
 
-	s := smtp.NewServer(&backend{})
+	s := smtp.NewServer(&backend{}, smtp.WithAuthenticationMethods([]smtp.AuthMethod{
+		smtp.AuthMethodPlain,
+		smtp.AuthMethodOAuthBearer,
+	}))
 
 	s.Addr = addr
 	s.Domain = "localhost"

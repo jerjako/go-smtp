@@ -72,6 +72,17 @@ func ExampleSendMail_PlainAuth() {
 	}
 }
 
+func ExampleSendMail_LoginAuth() {
+	// hostname is used by LoginAuth to validate the TLS certificate.
+	hostname := "mail.example.com"
+	auth := sasl.NewLoginClient("user@example.com", "password")
+
+	err := smtp.SendMail(hostname+":25", auth, from, recipients, msg)
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
 func ExampleSendMail() {
 	// Set up authentication information.
 	auth := sasl.NewPlainClient("", "user@example.com", "password")
@@ -100,8 +111,8 @@ func (bkd *Backend) NewSession(c *smtp.Conn) (smtp.Session, error) {
 // A Session is returned after successful login.
 type Session struct{}
 
-// AuthPlain implements authentication using SASL PLAIN.
-func (s *Session) AuthPlain(username, password string) error {
+// Auth implements authentication.
+func (s *Session) Auth(username, password string, additionalAuthParameters smtp.AuthParameters) error {
 	if username != "username" || password != "password" {
 		return errors.New("Invalid username or password")
 	}

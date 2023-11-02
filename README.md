@@ -74,7 +74,7 @@ type Session struct {
 	auth bool
 }
 
-func (s *Session) AuthPlain(username, password string) error {
+func (s *Session) Auth(username, password string, additionalAuthParameters smtp.AuthParameter) error {
 	if username != "username" || password != "password" {
 		return smtp.ErrAuthFailed
 	}

@@ -48,7 +48,7 @@ func (s *session) Logout() error {
 	return nil
 }
 
-func (s *session) AuthPlain(username, password string) error {
+func (s *session) Auth(username, password string, additionalAuthParameters smtp.AuthParameters) error {
 	if username != "username" || password != "password" {
 		return errors.New("Invalid username or password")
 	}

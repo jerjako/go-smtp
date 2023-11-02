@@ -33,8 +33,8 @@ func (s *transformSession) Reset() {
 	s.Session.Reset()
 }
 
-func (s *transformSession) AuthPlain(username, password string) error {
-	return s.Session.AuthPlain(username, password)
+func (s *transformSession) Auth(username, password string, additionalAuthParameters smtp.AuthParameters) error {
+	return s.Session.Auth(username, password, additionalAuthParameters)
 }
 
 func (s *transformSession) Mail(from string, opts *smtp.MailOptions) error {

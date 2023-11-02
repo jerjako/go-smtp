@@ -11,7 +11,7 @@ import (
 	"github.com/emersion/go-smtp"
 )
 
-func testServerGreetedLMTP(t *testing.T, fn ...serverConfigureFunc) (be *backend, s *smtp.Server, c net.Conn, scanner *bufio.Scanner) {
+func testServerGreetedLMTP(t *testing.T, fn ...func(*smtp.ServerConfig)) (be *backend, s *smtp.Server, c net.Conn, scanner *bufio.Scanner) {
 	be, s, c, scanner = testServer(t, fn...)
 
 	scanner.Scan()
@@ -55,18 +55,16 @@ func sendLHLO(t *testing.T, scanner *bufio.Scanner, c io.Writer) {
 }
 
 func TestServer_LMTP(t *testing.T) {
-	be, s, c, scanner := testServerGreetedLMTP(t, func(s *smtp.Server) {
-		s.LMTP = true
-		be := s.Backend.(*backend)
-		be.implementLMTPData = true
-		be.lmtpStatus = []struct {
-			addr string
-			err  error
-		}{
-			{"root@gchq.gov.uk", errors.New("nah")},
-			{"root@bnd.bund.de", nil},
-		}
-	})
+	_, s, c, scanner := testServerGreetedLMTP(t, smtp.WithLMTP(true))
+	be := s.Backend.(*backend)
+	be.implementLMTPData = true
+	be.lmtpStatus = []struct {
+		addr string
+		err  error
+	}{
+		{"root@gchq.gov.uk", errors.New("nah")},
+		{"root@bnd.bund.de", nil},
+	}
 	defer s.Close()
 	defer c.Close()
 
@@ -92,19 +90,17 @@ func TestServer_LMTP_Early(t *testing.T) {
 
 	lmtpStatusSync := make(chan struct{})
 
-	be, s, c, scanner := testServerGreetedLMTP(t, func(s *smtp.Server) {
-		s.LMTP = true
-		be := s.Backend.(*backend)
-		be.implementLMTPData = true
-		be.lmtpStatusSync = lmtpStatusSync
-		be.lmtpStatus = []struct {
-			addr string
-			err  error
-		}{
-			{"root@gchq.gov.uk", errors.New("nah")},
-			{"root@bnd.bund.de", nil},
-		}
-	})
+	_, s, c, scanner := testServerGreetedLMTP(t, smtp.WithLMTP(true))
+	be := s.Backend.(*backend)
+	be.implementLMTPData = true
+	be.lmtpStatusSync = lmtpStatusSync
+	be.lmtpStatus = []struct {
+		addr string
+		err  error
+	}{
+		{"root@gchq.gov.uk", errors.New("nah")},
+		{"root@bnd.bund.de", nil},
+	}
 	defer s.Close()
 	defer c.Close()
 
@@ -136,9 +132,7 @@ func TestServer_LMTP_Expand(t *testing.T) {
 	// correctly expands results if backend doesn't
 	// implement LMTPSession.
 
-	be, s, c, scanner := testServerGreetedLMTP(t, func(s *smtp.Server) {
-		s.LMTP = true
-	})
+	be, s, c, scanner := testServerGreetedLMTP(t, smtp.WithLMTP(true))
 	defer s.Close()
 	defer c.Close()
 
@@ -159,19 +153,17 @@ func TestServer_LMTP_Expand(t *testing.T) {
 }
 
 func TestServer_LMTP_DuplicatedRcpt(t *testing.T) {
-	be, s, c, scanner := testServerGreetedLMTP(t, func(s *smtp.Server) {
-		s.LMTP = true
-		be := s.Backend.(*backend)
-		be.implementLMTPData = true
-		be.lmtpStatus = []struct {
-			addr string
-			err  error
-		}{
-			{"root@gchq.gov.uk", &smtp.SMTPError{Code: 555}},
-			{"root@bnd.bund.de", nil},
-			{"root@gchq.gov.uk", &smtp.SMTPError{Code: 556}},
-		}
-	})
+	_, s, c, scanner := testServerGreetedLMTP(t, smtp.WithLMTP(true))
+	be := s.Backend.(*backend)
+	be.implementLMTPData = true
+	be.lmtpStatus = []struct {
+		addr string
+		err  error
+	}{
+		{"root@gchq.gov.uk", &smtp.SMTPError{Code: 555}},
+		{"root@bnd.bund.de", nil},
+		{"root@gchq.gov.uk", &smtp.SMTPError{Code: 556}},
+	}
 	defer s.Close()
 	defer c.Close()
 

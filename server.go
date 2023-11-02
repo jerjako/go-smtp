@@ -17,7 +17,47 @@ import (
 var (
 	errTCPAndLMTP   = errors.New("smtp: cannot start LMTP server listening on a TCP socket")
 	ErrServerClosed = errors.New("smtp: server already closed")
+
+	defaultServerConfig = ServerConfig{
+		AuthMethodsAllowed: []AuthMethod{AuthMethodPlain},
+		AuthDisabled:       false,
+		LMTP:               false,
+	}
 )
+
+type serverConfigFunc func(*ServerConfig)
+
+type ServerConfig struct {
+	AuthMethodsAllowed []AuthMethod
+	AuthDisabled       bool
+	LMTP               bool
+}
+
+type ServerOption serverConfigFunc
+
+// Authentication method allowed.
+// By default, only the PLAIN is allowed.
+func WithAuthenticationMethods(authMethodsAllowed []AuthMethod) func(*ServerConfig) {
+	return func(config *ServerConfig) {
+		config.AuthMethodsAllowed = authMethodsAllowed
+	}
+}
+
+// If set to true, disable the authentication.
+// By default, set to false.
+func WithAuthDisabled(authDisabled bool) func(*ServerConfig) {
+	return func(config *ServerConfig) {
+		config.AuthDisabled = authDisabled
+	}
+}
+
+// If set to true, enable LMTP mode.
+// By default, set to false.
+func WithLMTP(lmtp bool) func(*ServerConfig) {
+	return func(config *ServerConfig) {
+		config.LMTP = lmtp
+	}
+}
 
 // A function that creates SASL servers.
 type SaslServerFactory func(conn *Conn) sasl.Server
@@ -79,17 +119,33 @@ type Server struct {
 }
 
 // New creates a new SMTP server.
-func NewServer(be Backend) *Server {
-	return &Server{
+func NewServer(be Backend, options ...serverConfigFunc) *Server {
+	config := defaultServerConfig
+	for _, option := range options {
+		option(&config)
+	}
+	if len(config.AuthMethodsAllowed) == 0 {
+		panic("No Auth method allowed")
+	}
+
+	s := Server{
 		// Doubled maximum line length per RFC 5321 (Section 4.5.3.1.6)
 		MaxLineLength: 2000,
+		AuthDisabled:  config.AuthDisabled,
+		LMTP:          config.LMTP,
 
 		Backend:  be,
 		done:     make(chan struct{}, 1),
 		ErrorLog: log.New(os.Stderr, "smtp/server ", log.LstdFlags),
 		caps:     []string{"PIPELINING", "8BITMIME", "ENHANCEDSTATUSCODES", "CHUNKING"},
-		auths: map[string]SaslServerFactory{
-			sasl.Plain: func(conn *Conn) sasl.Server {
+		conns:    make(map[*Conn]struct{}),
+		auths:    map[string]SaslServerFactory{},
+	}
+
+	for _, methodAllowed := range config.AuthMethodsAllowed {
+		switch methodAllowed {
+		case AuthMethodPlain:
+			s.auths[sasl.Plain] = func(conn *Conn) sasl.Server {
 				return sasl.NewPlainServer(func(identity, username, password string) error {
 					if identity != "" && identity != username {
 						return errors.New("identities not supported")
@@ -100,12 +156,53 @@ func NewServer(be Backend) *Server {
 						panic("No session when AUTH is called")
 					}
 
-					return sess.AuthPlain(username, password)
+					return sess.Auth(username, password, AuthParameters{Method: AuthMethodPlain})
 				})
-			},
-		},
-		conns: make(map[*Conn]struct{}),
+			}
+		case AuthMethodLogin:
+			s.auths[sasl.Login] = func(conn *Conn) sasl.Server {
+				return sasl.NewLoginServer(func(username, password string) error {
+					sess := conn.Session()
+					if sess == nil {
+						panic("No session when AUTH is called")
+					}
+
+					return sess.Auth(username, password, AuthParameters{Method: AuthMethodLogin})
+				})
+			}
+		case AuthMethodOAuthBearer:
+			s.auths[sasl.OAuthBearer] = func(conn *Conn) sasl.Server {
+				return sasl.NewOAuthBearerServer(func(opts sasl.OAuthBearerOptions) *sasl.OAuthBearerError {
+					sess := conn.Session()
+					if sess == nil {
+						panic("No session when AUTH is called")
+					}
+
+					err := sess.Auth(opts.Username, opts.Token, AuthParameters{
+						Method: AuthMethodOAuthBearer,
+						Parameters: map[AuthMethod]struct{ AuthMethodOAuthBearer AuthParametersOAuthBearer }{
+							AuthMethodOAuthBearer: {
+								AuthParametersOAuthBearer{
+									Host: opts.Host,
+									Port: opts.Port,
+								},
+							},
+						},
+					})
+					if err != nil {
+						return &sasl.OAuthBearerError{
+							Status:  err.Error(),
+							Schemes: "bearer",
+						}
+					}
+
+					return nil
+				})
+			}
+		}
 	}
+
+	return &s
 }
 
 // Serve accepts incoming connections on the Listener l.

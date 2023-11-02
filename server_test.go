@@ -65,10 +65,18 @@ type session struct {
 	msg *message
 }
 
-func (s *session) AuthPlain(username, password string) error {
+func (s *session) Auth(username, password string, additionalAuthParameters smtp.AuthParameters) error {
 	if username != "username" || password != "password" {
 		return errors.New("Invalid username or password")
 	}
+
+	// OAuthBearer additional parameters
+	if additionalAuthParameters.Method == smtp.AuthMethodOAuthBearer &&
+		(additionalAuthParameters.Parameters[smtp.AuthMethodOAuthBearer].AuthMethodOAuthBearer.Host != "localhost" ||
+			additionalAuthParameters.Parameters[smtp.AuthMethodOAuthBearer].AuthMethodOAuthBearer.Port != 143) {
+		return errors.New("Invalid OAuthBearer host or port")
+	}
+
 	s.anonymous = false
 	return nil
 }
@@ -199,27 +207,28 @@ func (m *mockError) String() string  { return m.msg }
 func (m *mockError) Timeout() bool   { return false }
 func (m *mockError) Temporary() bool { return m.temporary }
 
-type serverConfigureFunc func(*smtp.Server)
-
-var (
-	authDisabled = func(s *smtp.Server) {
-		s.AuthDisabled = true
-	}
-)
-
-func testServer(t *testing.T, fn ...serverConfigureFunc) (be *backend, s *smtp.Server, c net.Conn, scanner *bufio.Scanner) {
+func testServer(t *testing.T, fn ...func(*smtp.ServerConfig)) (be *backend, s *smtp.Server, c net.Conn, scanner *bufio.Scanner) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	be = new(backend)
-	s = smtp.NewServer(be)
+	// Manually pass the serverConfig because NewServer requires an unexported type `serverConfigFunc`
+	switch len(fn) {
+	case 0:
+		s = smtp.NewServer(be)
+	case 1:
+		s = smtp.NewServer(be, fn[0])
+	case 2:
+		s = smtp.NewServer(be, fn[0], fn[1])
+	case 3:
+		s = smtp.NewServer(be, fn[0], fn[1], fn[2])
+	case 4:
+		s = smtp.NewServer(be, fn[0], fn[1], fn[2], fn[3])
+	}
 	s.Domain = "localhost"
 	s.AllowInsecureAuth = true
-	for _, f := range fn {
-		f(s)
-	}
 
 	go s.Serve(l)
 
@@ -232,7 +241,7 @@ func testServer(t *testing.T, fn ...serverConfigureFunc) (be *backend, s *smtp.S
 	return
 }
 
-func testServerGreeted(t *testing.T, fn ...serverConfigureFunc) (be *backend, s *smtp.Server, c net.Conn, scanner *bufio.Scanner) {
+func testServerGreeted(t *testing.T, fn ...func(*smtp.ServerConfig)) (be *backend, s *smtp.Server, c net.Conn, scanner *bufio.Scanner) {
 	be, s, c, scanner = testServer(t, fn...)
 
 	scanner.Scan()
@@ -243,7 +252,7 @@ func testServerGreeted(t *testing.T, fn ...serverConfigureFunc) (be *backend, s 
 	return
 }
 
-func testServerEhlo(t *testing.T, fn ...serverConfigureFunc) (be *backend, s *smtp.Server, c net.Conn, scanner *bufio.Scanner, caps map[string]bool) {
+func testServerEhlo(t *testing.T, fn ...func(*smtp.ServerConfig)) (be *backend, s *smtp.Server, c net.Conn, scanner *bufio.Scanner, caps map[string]bool) {
 	be, s, c, scanner = testServerGreeted(t, fn...)
 
 	io.WriteString(c, "EHLO localhost\r\n")
@@ -322,8 +331,8 @@ func TestServer_helo(t *testing.T) {
 	}
 }
 
-func testServerAuthenticated(t *testing.T) (be *backend, s *smtp.Server, c net.Conn, scanner *bufio.Scanner) {
-	be, s, c, scanner, caps := testServerEhlo(t)
+func testServerAuthenticated(t *testing.T, fn ...func(*smtp.ServerConfig)) (be *backend, s *smtp.Server, c net.Conn, scanner *bufio.Scanner) {
+	be, s, c, scanner, caps := testServerEhlo(t, fn...)
 
 	if _, ok := caps["AUTH PLAIN"]; !ok {
 		t.Fatal("AUTH PLAIN capability is missing when auth is enabled")
@@ -372,6 +381,75 @@ func TestServerAuthTwice(t *testing.T) {
 	io.WriteString(c, "AUTH PLAIN AHVzZXJuYW1lAHBhc3N3b3Jk\r\n")
 	scanner.Scan()
 	if !strings.HasPrefix(scanner.Text(), "503 ") {
+		t.Fatal("Invalid AUTH response:", scanner.Text())
+	}
+}
+
+func TestServerNoAuthMethod(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Errorf("No Auth method allowed")
+		}
+	}()
+	_, _, _, _, _ = testServerEhlo(t, smtp.WithAuthenticationMethods([]smtp.AuthMethod{}))
+}
+
+func TestServerAuthLogin(t *testing.T) {
+	_, _, c, scanner, caps := testServerEhlo(t, smtp.WithAuthenticationMethods([]smtp.AuthMethod{smtp.AuthMethodLogin}))
+
+	if _, ok := caps["AUTH PLAIN"]; ok {
+		t.Fatal("Only AUTH LOGIN should be available")
+	}
+
+	if _, ok := caps["AUTH LOGIN"]; !ok {
+		t.Fatal("AUTH LOGIN capability is missing")
+	}
+
+	io.WriteString(c, "AUTH LOGIN\r\n")
+	scanner.Scan()
+	if !strings.HasPrefix(scanner.Text(), "334 ") {
+		t.Fatal("Invalid AUTH response:", scanner.Text())
+	}
+
+	io.WriteString(c, "dXNlcm5hbWU=\r\n")
+	scanner.Scan()
+	if !strings.HasPrefix(scanner.Text(), "334 ") {
+		t.Fatal("Invalid AUTH response:", scanner.Text())
+	}
+
+	io.WriteString(c, "cGFzc3dvcmQ=\r\n")
+	scanner.Scan()
+	if !strings.HasPrefix(scanner.Text(), "235 ") {
+		t.Fatal("Invalid AUTH response:", scanner.Text())
+	}
+
+	io.WriteString(c, "RSET\r\n")
+	scanner.Scan()
+	if !strings.HasPrefix(scanner.Text(), "250 ") {
+		t.Fatal("Invalid AUTH response:", scanner.Text())
+	}
+}
+
+func TestServerAuthOAuthBearer(t *testing.T) {
+	_, _, c, scanner, caps := testServerEhlo(t, smtp.WithAuthenticationMethods([]smtp.AuthMethod{smtp.AuthMethodOAuthBearer}))
+
+	if _, ok := caps["AUTH PLAIN"]; ok {
+		t.Fatal("Only AUTH LOGIN should be available")
+	}
+
+	if _, ok := caps["AUTH OAUTHBEARER"]; !ok {
+		t.Fatal("AUTH LOGIN capability is missing")
+	}
+
+	io.WriteString(c, "AUTH OAUTHBEARER bixhPXVzZXJuYW1lLAFob3N0PWxvY2FsaG9zdAFwb3J0PTE0MwFhdXRoPUJlYXJlciBwYXNzd29yZAEB\r\n")
+	scanner.Scan()
+	if !strings.HasPrefix(scanner.Text(), "235 ") {
+		t.Fatal("Invalid AUTH response:", scanner.Text())
+	}
+
+	io.WriteString(c, "RSET\r\n")
+	scanner.Scan()
+	if !strings.HasPrefix(scanner.Text(), "250 ") {
 		t.Fatal("Invalid AUTH response:", scanner.Text())
 	}
 }
@@ -635,7 +713,7 @@ func TestServer_LFDotLF(t *testing.T) {
 }
 
 func TestServer_authDisabled(t *testing.T) {
-	_, s, c, scanner, caps := testServerEhlo(t, authDisabled)
+	_, s, c, scanner, caps := testServerEhlo(t, smtp.WithAuthDisabled(true))
 	defer s.Close()
 	defer c.Close()
 

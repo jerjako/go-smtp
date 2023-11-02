@@ -4,6 +4,26 @@ import (
 	"io"
 )
 
+const (
+	AuthMethodPlain       AuthMethod = "PLAIN"
+	AuthMethodLogin       AuthMethod = "LOGIN"
+	AuthMethodOAuthBearer AuthMethod = "OAUTHBEARER"
+)
+
+type (
+	AuthMethod     string
+	AuthParameters struct {
+		Method     AuthMethod
+		Parameters map[AuthMethod]struct {
+			AuthMethodOAuthBearer AuthParametersOAuthBearer
+		}
+	}
+	AuthParametersOAuthBearer struct {
+		Host string
+		Port int
+	}
+)
+
 var (
 	ErrAuthFailed = &SMTPError{
 		Code:         535,
@@ -37,8 +57,8 @@ type Session interface {
 	// Free all resources associated with session.
 	Logout() error
 
-	// Authenticate the user using SASL PLAIN.
-	AuthPlain(username, password string) error
+	// Authenticate the user.
+	Auth(username, password string, additionalAuthParameters AuthParameters) error
 
 	// Set return path for currently processed message.
 	Mail(from string, opts *MailOptions) error
